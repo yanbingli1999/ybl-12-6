@@ -23,6 +23,7 @@ export default {
           purple: '#9933ff',
           green: '#33ff66',
           gold: '#ffd700',
+          orange: '#ff9933',
         }
       },
       fontFamily: {

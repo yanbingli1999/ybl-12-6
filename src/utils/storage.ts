@@ -1,6 +1,7 @@
-import type { GameSaveData, Ship, Upgrade, GameConfig, BattleRecord, GameStats } from '../types';
+import type { GameSaveData, Ship, Upgrade, GameConfig, BattleRecord, GameStats, DeceptionGameState } from '../types';
 import { createDefaultShip, createDefaultUpgrades } from '../data/defaultShip';
 import { defaultConfig } from '../data/defaultConfig';
+import { createDefaultDeceptionState } from './deception';
 
 const STORAGE_KEY = 'starship_dice_commander_save';
 
@@ -24,6 +25,7 @@ export function createDefaultSaveData(): GameSaveData {
     battleHistory: [],
     stats: { ...defaultStats },
     rewardPoints: 0,
+    deceptionState: createDefaultDeceptionState(),
   };
 }
 
@@ -50,7 +52,7 @@ export function saveSaveData(data: GameSaveData): void {
 
 function validateSaveData(data: GameSaveData): GameSaveData {
   const defaults = createDefaultSaveData();
-  
+
   return {
     ship: { ...defaults.ship, ...data.ship, cabins: data.ship.cabins || defaults.ship.cabins },
     upgrades: data.upgrades && data.upgrades.length > 0 ? data.upgrades : defaults.upgrades,
@@ -58,6 +60,7 @@ function validateSaveData(data: GameSaveData): GameSaveData {
     battleHistory: data.battleHistory || [],
     stats: { ...defaults.stats, ...data.stats },
     rewardPoints: typeof data.rewardPoints === 'number' ? data.rewardPoints : 0,
+    deceptionState: data.deceptionState || defaults.deceptionState,
   };
 }
 
@@ -144,4 +147,15 @@ export function importSaveData(jsonString: string): boolean {
     console.error('Failed to import save data:', e);
     return false;
   }
+}
+
+export function loadDeceptionState(): DeceptionGameState {
+  const data = loadSaveData();
+  return data.deceptionState || createDefaultDeceptionState();
+}
+
+export function saveDeceptionState(deceptionState: DeceptionGameState): void {
+  const data = loadSaveData();
+  data.deceptionState = deceptionState;
+  saveSaveData(data);
 }

@@ -38,11 +38,21 @@ export interface Ship {
 
 export type EnemyIntentType = 'attack' | 'defend' | 'charge' | 'special' | 'repair';
 
+export type DeceptionType = 'none' | 'fake_attack' | 'fake_defend' | 'hide_special' | 'fake_charge';
+
 export interface EnemyIntent {
   type: EnemyIntentType;
   value: number;
   description: string;
   icon: string;
+}
+
+export interface EnemyIntentWithDeception extends EnemyIntent {
+  isDisguised: boolean;
+  deceptionType: DeceptionType;
+  trueIntent: EnemyIntent;
+  isRevealed: boolean;
+  revealLevel: number;
 }
 
 export interface EnemyAbility {
@@ -53,6 +63,42 @@ export interface EnemyAbility {
   currentCooldown: number;
   damage?: number;
   effect?: string;
+}
+
+export interface EnemyMemory {
+  enemyType: string;
+  totalEncounters: number;
+  timesDisguised: number;
+  timesRevealed: number;
+  deceptionHistory: DeceptionType[];
+  intentPatterns: Record<EnemyIntentType, number>;
+  credibility: number;
+  lastEncounterTime: number;
+}
+
+export interface ScannerState {
+  scanPoints: number;
+  revealThreshold: number;
+  activeScanBonus: number;
+  consecutiveMisjudgments: number;
+  maxMisjudgmentPenalty: number;
+  lastScanResult: 'revealed' | 'misjudged' | 'none';
+}
+
+export interface EnemyTacticalBonus {
+  attackBonus: number;
+  defenseBonus: number;
+  evasionBonus: number;
+  duration: number;
+  maxDuration: number;
+  source: 'misjudgment' | 'deception_success';
+}
+
+export interface DeceptionGameState {
+  enemyMemory: Record<string, EnemyMemory>;
+  scannerState: ScannerState;
+  tacticalBonus: EnemyTacticalBonus | null;
+  currentBattleIntentRevealed: boolean;
 }
 
 export interface Enemy {
@@ -66,10 +112,12 @@ export interface Enemy {
   attack: number;
   defense: number;
   evasion: number;
-  intent: EnemyIntent;
+  intent: EnemyIntentWithDeception;
   abilities: EnemyAbility[];
   description: string;
   sprite: string;
+  deceptionChance: number;
+  preferredDeceptions: DeceptionType[];
 }
 
 export type BattleLogType = 'damage' | 'heal' | 'shield' | 'effect' | 'system' | 'crit' | 'miss';
@@ -99,6 +147,9 @@ export interface BattleState {
   startTime: number;
   endTime?: number;
   rewardPoints: number;
+  scannerPointsUsed: number;
+  deceptionsRevealed: number;
+  misjudgments: number;
 }
 
 export interface GameConfig {
@@ -113,6 +164,16 @@ export interface GameConfig {
   maxRerolls: number;
   diceCount: number;
   enemyDamageVariance: number;
+  baseDeceptionChance: number;
+  scanRevealThreshold: number;
+  scanPointsPerReveal: number;
+  maxConsecutiveMisjudgments: number;
+  misjudgmentAttackBonus: number;
+  misjudgmentDefenseBonus: number;
+  misjudgmentDuration: number;
+  memoryCredibilityDecayRate: number;
+  revealAccuracyPerMemory: number;
+  maxStartingRevealLevel: number;
 }
 
 export interface Upgrade {
@@ -174,6 +235,7 @@ export interface GameSaveData {
   battleHistory: BattleRecord[];
   stats: GameStats;
   rewardPoints: number;
+  deceptionState: DeceptionGameState;
 }
 
 export interface DiceFace {

@@ -1,4 +1,7 @@
-import type { Enemy, EnemyIntent } from '../types';
+import type { Enemy, EnemyIntent, DeceptionType, EnemyMemory } from '../types';
+import { applyDeceptionToIntent, createEnemyMemory } from '../utils/deception';
+import { loadDeceptionState, saveDeceptionState } from '../utils/storage';
+import { defaultConfig } from './defaultConfig';
 
 interface EnemyTemplate {
   id: string;
@@ -20,6 +23,8 @@ interface EnemyTemplate {
     effect?: string;
   }>;
   intentWeights: Record<string, number>;
+  deceptionChance: number;
+  preferredDeceptions: DeceptionType[];
 }
 
 export const enemyTemplates: EnemyTemplate[] = [
@@ -40,6 +45,8 @@ export const enemyTemplates: EnemyTemplate[] = [
       defend: 0.2,
       charge: 0.1,
     },
+    deceptionChance: 0.2,
+    preferredDeceptions: ['fake_attack', 'fake_charge'],
   },
   {
     id: 'fighter',
@@ -67,6 +74,8 @@ export const enemyTemplates: EnemyTemplate[] = [
       charge: 0.15,
       special: 0.15,
     },
+    deceptionChance: 0.35,
+    preferredDeceptions: ['fake_defend', 'hide_special'],
   },
   {
     id: 'cruiser',
@@ -102,6 +111,8 @@ export const enemyTemplates: EnemyTemplate[] = [
       special: 0.1,
       repair: 0.05,
     },
+    deceptionChance: 0.4,
+    preferredDeceptions: ['fake_attack', 'fake_charge', 'hide_special'],
   },
   {
     id: 'pirate_raider',
@@ -129,6 +140,8 @@ export const enemyTemplates: EnemyTemplate[] = [
       charge: 0.25,
       special: 0.15,
     },
+    deceptionChance: 0.5,
+    preferredDeceptions: ['fake_defend', 'hide_special', 'fake_charge'],
   },
   {
     id: 'alien_mothership',
@@ -172,12 +185,16 @@ export const enemyTemplates: EnemyTemplate[] = [
       special: 0.2,
       repair: 0.1,
     },
+    deceptionChance: 0.6,
+    preferredDeceptions: ['fake_attack', 'fake_defend', 'hide_special', 'fake_charge'],
   },
 ];
 
 export function createEnemy(templateId: string): Enemy {
   const template = enemyTemplates.find(t => t.id === templateId) || enemyTemplates[0];
-  
+  const deceptionState = loadDeceptionState();
+  const memory = deceptionState.enemyMemory[template.type] || createEnemyMemory(template.type);
+
   const enemy: Enemy = {
     id: `${template.id}_${Date.now()}`,
     name: template.name,
@@ -191,24 +208,37 @@ export function createEnemy(templateId: string): Enemy {
     evasion: template.evasion,
     description: template.description,
     sprite: template.sprite,
+    deceptionChance: template.deceptionChance * defaultConfig.baseDeceptionChance,
+    preferredDeceptions: template.preferredDeceptions,
     intent: {
       type: 'attack',
       value: template.attack,
       description: '准备攻击',
       icon: '⚔️',
+      isDisguised: false,
+      deceptionType: 'none',
+      trueIntent: {
+        type: 'attack',
+        value: template.attack,
+        description: '准备攻击',
+        icon: '⚔️',
+      },
+      isRevealed: false,
+      revealLevel: 0,
     },
     abilities: template.abilities.map(a => ({
       ...a,
       currentCooldown: 0,
     })),
   };
-  
-  return generateEnemyIntent(enemy, template.intentWeights);
+
+  return generateEnemyIntent(enemy, template.intentWeights, memory);
 }
 
 export function generateEnemyIntent(
   enemy: Enemy,
-  weights?: Record<string, number>
+  weights?: Record<string, number>,
+  memory?: EnemyMemory
 ): Enemy {
   const defaultWeights: Record<string, number> = {
     attack: 0.5,
@@ -216,13 +246,13 @@ export function generateEnemyIntent(
     charge: 0.15,
     special: 0.1,
   };
-  
+
   const useWeights = weights || defaultWeights;
   const totalWeight = Object.values(useWeights).reduce((sum, w) => sum + w, 0);
-  
+
   let random = Math.random() * totalWeight;
   let selectedType = 'attack';
-  
+
   for (const [type, weight] of Object.entries(useWeights)) {
     random -= weight;
     if (random <= 0) {
@@ -230,19 +260,19 @@ export function generateEnemyIntent(
       break;
     }
   }
-  
+
   let availableSpecial = enemy.abilities.filter(a => a.currentCooldown === 0);
   if (selectedType === 'special' && availableSpecial.length === 0) {
     selectedType = 'attack';
   }
-  
+
   const hpPercent = enemy.hp / enemy.maxHp;
   if (hpPercent < 0.3 && Math.random() < 0.3) {
     selectedType = 'defend';
   }
-  
+
   let forcedSpecial: typeof availableSpecial[0] | undefined;
-  
+
   if (enemy.shield < enemy.maxShield * 0.2 && Math.random() < 0.2) {
     const repairAbility = enemy.abilities.find(a => a.effect === 'heal_shield' && a.currentCooldown === 0);
     if (repairAbility) {
@@ -250,7 +280,7 @@ export function generateEnemyIntent(
       forcedSpecial = repairAbility;
     }
   }
-  
+
   if (hpPercent < 0.25 && !forcedSpecial && Math.random() < 0.25) {
     const healAbility = enemy.abilities.find(a => a.effect === 'heal_hp' && a.currentCooldown === 0);
     if (healAbility) {
@@ -258,18 +288,18 @@ export function generateEnemyIntent(
       forcedSpecial = healAbility;
     }
   }
-  
+
   availableSpecial = enemy.abilities.filter(a => a.currentCooldown === 0);
   if (selectedType === 'special' && availableSpecial.length === 0) {
     selectedType = 'attack';
     forcedSpecial = undefined;
   }
-  
-  let intent: EnemyIntent;
-  
+
+  let trueIntent: EnemyIntent;
+
   switch (selectedType) {
     case 'attack':
-      intent = {
+      trueIntent = {
         type: 'attack',
         value: Math.floor(enemy.attack * (0.8 + Math.random() * 0.4)),
         description: '准备攻击',
@@ -277,7 +307,7 @@ export function generateEnemyIntent(
       };
       break;
     case 'defend':
-      intent = {
+      trueIntent = {
         type: 'defend',
         value: Math.floor(enemy.attack * 0.5),
         description: '进入防御姿态',
@@ -285,7 +315,7 @@ export function generateEnemyIntent(
       };
       break;
     case 'charge':
-      intent = {
+      trueIntent = {
         type: 'charge',
         value: Math.floor(enemy.attack * 1.5),
         description: '蓄力中...',
@@ -294,7 +324,7 @@ export function generateEnemyIntent(
       break;
     case 'special':
       const special = forcedSpecial || availableSpecial[Math.floor(Math.random() * availableSpecial.length)];
-      intent = {
+      trueIntent = {
         type: 'special',
         value: special.damage || 0,
         description: `准备释放 ${special.name}`,
@@ -302,7 +332,7 @@ export function generateEnemyIntent(
       };
       break;
     case 'repair':
-      intent = {
+      trueIntent = {
         type: 'repair',
         value: Math.floor(enemy.maxHp * 0.1),
         description: '进行维修',
@@ -310,17 +340,24 @@ export function generateEnemyIntent(
       };
       break;
     default:
-      intent = {
+      trueIntent = {
         type: 'attack',
         value: enemy.attack,
         description: '准备攻击',
         icon: '⚔️',
       };
   }
-  
+
+  const intentWithDeception = applyDeceptionToIntent(
+    trueIntent,
+    enemy,
+    defaultConfig,
+    memory
+  );
+
   return {
     ...enemy,
-    intent,
+    intent: intentWithDeception,
   };
 }
 
@@ -331,16 +368,16 @@ export function getRandomEnemy(difficulty: number = 1): Enemy {
     if (difficulty <= 3) return ['fighter', 'pirate_raider', 'cruiser'].includes(e.id);
     return true;
   });
-  
+
   const template = availableEnemies[Math.floor(Math.random() * availableEnemies.length)];
   const enemy = createEnemy(template.id);
-  
+
   const difficultyMultiplier = 1 + (difficulty - 1) * 0.2;
   enemy.hp = Math.floor(enemy.hp * difficultyMultiplier);
   enemy.maxHp = enemy.hp;
   enemy.shield = Math.floor(enemy.shield * difficultyMultiplier);
   enemy.maxShield = enemy.shield;
   enemy.attack = Math.floor(enemy.attack * difficultyMultiplier);
-  
+
   return enemy;
 }

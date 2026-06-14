@@ -1,7 +1,12 @@
-import type { 
+import type {
   Ship, Enemy, Die, CabinType, DamageResult, BattleLogEntry,
-  GameConfig, AllocationResult, EnemyIntent
+  GameConfig, AllocationResult, EnemyIntent, EnemyIntentWithDeception
 } from '../types';
+import {
+  attemptScanReveal,
+  getDeceptionDescription,
+  getEffectiveIntent
+} from './deception';
 
 export function calculateDamage(
   baseDamage: number,
@@ -71,11 +76,12 @@ export function calculateCabinEffect(
   ship: Ship,
   enemy: Enemy,
   config: GameConfig
-): { 
-  effect: string; 
-  value: number; 
+): {
+  effect: string;
+  value: number;
   type: 'damage' | 'heal' | 'shield' | 'effect';
   isOverheated: boolean;
+  scanResult?: { revealed: boolean; newIntent: EnemyIntentWithDeception; pointsUsed: number };
 } {
   const cabin = ship.cabins.find(c => c.type === cabinType);
   if (!cabin || cabin.damaged) {
@@ -86,7 +92,12 @@ export function calculateCabinEffect(
   const effectivePoints = isOverheated ? 0 : totalPoints;
   const levelMultiplier = 1 + (cabin.level - 1) * 0.2;
 
-  let result: { effect: string; value: number; type: 'damage' | 'heal' | 'shield' | 'effect' };
+  let result: {
+    effect: string;
+    value: number;
+    type: 'damage' | 'heal' | 'shield' | 'effect';
+    scanResult?: { revealed: boolean; newIntent: EnemyIntentWithDeception; pointsUsed: number };
+  };
 
   switch (cabinType) {
     case 'weapon': {
@@ -128,10 +139,37 @@ export function calculateCabinEffect(
     }
     case 'scanner': {
       const evasionReduction = effectivePoints * config.scanEvasionReduction * levelMultiplier;
+      let effectText = '';
+      let scanResult: { revealed: boolean; newIntent: EnemyIntentWithDeception; pointsUsed: number } | undefined;
+
+      if (isOverheated) {
+        effectText = '扫描舱过热！无法扫描';
+      } else {
+        const baseEffects: string[] = [];
+        baseEffects.push(`敌方闪避 -${(evasionReduction * 100).toFixed(0)}%`);
+
+        if (effectivePoints > 0) {
+          scanResult = attemptScanReveal(enemy.intent, effectivePoints, config);
+
+          if (scanResult.revealed && enemy.intent.isDisguised) {
+            baseEffects.push(`识破伪装：${getDeceptionDescription(enemy.intent.deceptionType)}`);
+          } else if (!scanResult.revealed && enemy.intent.isDisguised && scanResult.pointsUsed > 0) {
+            baseEffects.push('扫描未发现异常...');
+          }
+
+          if (scanResult.pointsUsed > 0) {
+            baseEffects.push(`消耗 ${scanResult.pointsUsed} 扫描点数`);
+          }
+        }
+
+        effectText = `扫描完成，${baseEffects.join('，')}`;
+      }
+
       result = {
-        effect: isOverheated ? '扫描舱过热！无法扫描' : `扫描完成，敌方闪避 -${(evasionReduction * 100).toFixed(0)}%`,
+        effect: effectText,
         value: evasionReduction,
         type: 'effect',
+        scanResult,
       };
       break;
     }
@@ -155,11 +193,11 @@ export function checkOverheat(
 
 export function getAllocations(dice: Die[]): AllocationResult[] {
   const cabinTypes: CabinType[] = ['engine', 'shield', 'weapon', 'repair', 'scanner'];
-  
+
   return cabinTypes.map(type => {
     const assignedDice = dice.filter(d => d.assignedTo === type);
     const totalPoints = assignedDice.reduce((sum, d) => sum + d.value, 0);
-    
+
     return {
       cabinType: type,
       totalPoints,
@@ -173,17 +211,32 @@ export function executeEnemyIntent(
   enemy: Enemy,
   player: Ship,
   config: GameConfig
-): { 
-  damageResult: DamageResult; 
+): {
+  damageResult: DamageResult;
   shieldResult: { damage: number; shieldAbsorbed: number; remainingShield: number };
   logs: BattleLogEntry[];
   newPlayerHp: number;
   newPlayerShield: number;
   effect?: string;
+  wasMisjudged: boolean;
 } {
   const logs: BattleLogEntry[] = [];
-  const intent = enemy.intent;
-  
+  const displayedIntent = enemy.intent;
+  const trueIntent = getEffectiveIntent(enemy.intent);
+  const wasMisjudged = displayedIntent.isDisguised && !displayedIntent.isRevealed;
+
+  if (wasMisjudged) {
+    logs.push(createLog(
+      'enemy',
+      'effect',
+      `${enemy.name} 成功使用了${getDeceptionDescription(displayedIntent.deceptionType)}！`,
+      undefined,
+      1
+    ));
+  }
+
+  const intent = trueIntent;
+
   let baseDamage = 0;
   let guaranteedCrit = false;
   let specialEffect: string | undefined;
@@ -234,7 +287,7 @@ export function executeEnemyIntent(
   }
 
   const shieldResult = applyShieldAbsorption(damageResult, player.shield, config);
-  
+
   if (shieldResult.shieldAbsorbed > 0) {
     logs.push(createLog('player', 'shield', `护盾吸收了 ${shieldResult.shieldAbsorbed} 点伤害`, shieldResult.shieldAbsorbed, 1));
   }
@@ -257,6 +310,7 @@ export function executeEnemyIntent(
     newPlayerHp,
     newPlayerShield,
     effect: specialEffect,
+    wasMisjudged,
   };
 }
 
@@ -274,6 +328,8 @@ export function executePlayerActions(
   totalShieldGained: number;
   damagedCabins: CabinType[];
   energyUsed: number;
+  scanRevealed: boolean;
+  scannerPointsUsed: number;
 } {
   const logs: BattleLogEntry[] = [];
   let newPlayer = { ...player };
@@ -284,6 +340,8 @@ export function executePlayerActions(
   const damagedCabins: CabinType[] = [];
   let playerEvasionBonus = 0;
   let enemyEvasionReduction = 0;
+  let scanRevealed = false;
+  let scannerPointsUsed = 0;
 
   const totalDicePoints = dice.reduce((sum, d) => sum + d.value, 0);
   const energyCost = Math.floor(totalDicePoints * config.energyCostPerPoint);
@@ -355,11 +413,11 @@ export function executePlayerActions(
             logs.push(createLog('enemy', 'miss', '敌方闪避了攻击！', undefined, 1));
           } else {
             const shieldAbsorption = applyShieldAbsorption(damageResult, newEnemy.shield, config);
-            
+
             if (shieldAbsorption.shieldAbsorbed > 0) {
               logs.push(createLog('enemy', 'shield', `敌方护盾吸收 ${shieldAbsorption.shieldAbsorbed} 伤害`, shieldAbsorption.shieldAbsorbed, 1));
             }
-            
+
             if (damageResult.isCrit) {
               logs.push(createLog('player', 'crit', '暴击！', damageResult.damage, 1));
             }
@@ -371,7 +429,7 @@ export function executePlayerActions(
             newEnemy.shield = shieldAbsorption.remainingShield;
             newEnemy.hp = Math.max(0, newEnemy.hp - shieldAbsorption.damage);
             totalDamageDealt += shieldAbsorption.damage;
-            
+
             if (shieldAbsorption.damage > 0) {
               logs.push(createLog('enemy', 'damage', `敌方受到 ${shieldAbsorption.damage} 点伤害`, shieldAbsorption.damage, 1));
             }
@@ -392,7 +450,7 @@ export function executePlayerActions(
           const healAmount = Math.min(effect.value, newPlayer.maxHp - newPlayer.hp);
           newPlayer.hp = Math.min(newPlayer.maxHp, newPlayer.hp + effect.value);
           totalHealDone += healAmount;
-          
+
           newPlayer.cabins = newPlayer.cabins.map(c => {
             if (c.damaged && c.cooldown > 0) {
               return { ...c, cooldown: c.cooldown - 1, damaged: c.cooldown - 1 > 0 };
@@ -411,6 +469,22 @@ export function executePlayerActions(
       case 'scanner': {
         if (!isOverheated) {
           enemyEvasionReduction += effect.value;
+
+          if (effect.scanResult) {
+            scanRevealed = effect.scanResult.revealed;
+            scannerPointsUsed = effect.scanResult.pointsUsed;
+
+            if (effect.scanResult.revealed && newEnemy.intent.isDisguised) {
+              newEnemy.intent = effect.scanResult.newIntent;
+              logs.push(createLog(
+                'system',
+                'effect',
+                `扫描成功！识破敌方${getDeceptionDescription(newEnemy.intent.deceptionType)}`,
+                undefined,
+                1
+              ));
+            }
+          }
         }
         break;
       }
@@ -445,6 +519,8 @@ export function executePlayerActions(
     totalShieldGained,
     damagedCabins,
     energyUsed: actualEnergyCost,
+    scanRevealed,
+    scannerPointsUsed,
   };
 }
 
@@ -475,7 +551,7 @@ export function checkBattleEnd(player: Ship, enemy: Enemy): 'ongoing' | 'victory
 export function calculateReward(result: 'victory' | 'defeat' | 'fled', turns: number, difficulty: number): number {
   if (result === 'defeat') return 0;
   if (result === 'fled') return 0;
-  
+
   const baseReward = 10 * difficulty;
   const turnBonus = Math.max(0, 10 - turns) * difficulty;
   return baseReward + turnBonus;
