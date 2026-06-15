@@ -109,9 +109,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     const newDeceptionState: DeceptionGameState = {
       ...deceptionState,
       currentBattleIntentRevealed: false,
+      tacticalBonus: null,
       scannerState: {
         ...deceptionState.scannerState,
         scanPoints: 0,
+        consecutiveMisjudgments: 0,
         lastScanResult: 'none' as const,
       },
     };
@@ -244,18 +246,24 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
 
     if (enemyResult.wasMisjudged) {
-      const misjudgmentResult = registerMisjudgment(newDeceptionState.scannerState, config);
+      const existingBonus = newDeceptionState.tacticalBonus;
+      const misjudgmentResult = registerMisjudgment(newDeceptionState.scannerState, config, existingBonus);
       newDeceptionState.scannerState = misjudgmentResult.scannerState;
-      newDeceptionState.tacticalBonus = misjudgmentResult.tacticalBonus;
+      if (misjudgmentResult.tacticalBonus) {
+        newDeceptionState.tacticalBonus = misjudgmentResult.tacticalBonus;
+      }
       newState.misjudgments = battleState.misjudgments + 1;
 
       if (misjudgmentResult.tacticalBonus) {
+        const isRefresh = !!existingBonus;
         enemyResult.logs.push({
           id: `log_${Date.now()}_bonus`,
           turn: battleState.turn,
           type: 'effect',
           source: 'enemy',
-          message: `敌方获得战术优势！攻击+${Math.floor(misjudgmentResult.tacticalBonus.attackBonus * 100)}%，防御+${Math.floor(misjudgmentResult.tacticalBonus.defenseBonus * 100)}%`,
+          message: isRefresh
+            ? `敌方战术优势持续刷新！攻击+${Math.floor(misjudgmentResult.tacticalBonus.attackBonus * 100)}%，防御+${Math.floor(misjudgmentResult.tacticalBonus.defenseBonus * 100)}%`
+            : `敌方获得战术优势！攻击+${Math.floor(misjudgmentResult.tacticalBonus.attackBonus * 100)}%，防御+${Math.floor(misjudgmentResult.tacticalBonus.defenseBonus * 100)}%`,
           timestamp: Date.now(),
         });
       }
@@ -360,10 +368,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     newDeceptionState.currentBattleIntentRevealed = false;
 
     newState.enemy = generateEnemyIntent(newState.enemy, undefined, enemyMemory);
-
-    if (newDeceptionState.tacticalBonus) {
-      newState.enemy = applyTacticalBonusToEnemy(newState.enemy, newDeceptionState.tacticalBonus);
-    }
 
     const playerEvasionReset = useShipStore.getState().ship.evasion;
     newState.player = {

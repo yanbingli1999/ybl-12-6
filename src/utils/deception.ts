@@ -245,7 +245,8 @@ export function updateEnemyMemory(
 
 export function registerMisjudgment(
   scannerState: ScannerState,
-  config: GameConfig
+  config: GameConfig,
+  existingBonus?: EnemyTacticalBonus | null
 ): { scannerState: ScannerState; tacticalBonus: EnemyTacticalBonus | null } {
   const newScannerState = { ...scannerState };
   newScannerState.consecutiveMisjudgments += 1;
@@ -253,7 +254,12 @@ export function registerMisjudgment(
 
   let tacticalBonus: EnemyTacticalBonus | null = null;
 
-  if (newScannerState.consecutiveMisjudgments >= 2) {
+  if (existingBonus) {
+    tacticalBonus = {
+      ...existingBonus,
+      duration: Math.max(existingBonus.duration, config.misjudgmentDuration),
+    };
+  } else if (newScannerState.consecutiveMisjudgments >= 2) {
     const bonusMultiplier = Math.min(
       1 + (newScannerState.consecutiveMisjudgments - 1) * 0.5,
       2
@@ -335,11 +341,11 @@ export function getDeceptionHint(intent: EnemyIntentWithDeception): string {
   if (!intent.isDisguised) return '';
   if (intent.isRevealed) return `已识破：${getDeceptionDescription(intent.deceptionType)}`;
 
-  if (intent.revealLevel >= 1) {
-    return '检测到异常信号...';
-  }
   if (intent.revealLevel >= 2) {
     return '意图可信度较低，建议扫描确认';
+  }
+  if (intent.revealLevel >= 1) {
+    return '检测到异常信号...';
   }
   return '';
 }

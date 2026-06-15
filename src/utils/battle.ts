@@ -223,7 +223,7 @@ export function executeEnemyIntent(
   const logs: BattleLogEntry[] = [];
   const displayedIntent = enemy.intent;
   const trueIntent = getEffectiveIntent(enemy.intent);
-  const wasMisjudged = displayedIntent.isDisguised && !displayedIntent.isRevealed;
+  const wasMisjudged = displayedIntent.isDisguised && !displayedIntent.isRevealed && displayedIntent.revealLevel === 0;
 
   if (wasMisjudged) {
     logs.push(createLog(
